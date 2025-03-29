@@ -1,0 +1,106 @@
+const express = require('express');
+const path = require('path');
+const axios = require('axios');
+const fs = require('fs');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware para adicionar cabeçalhos CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  // Intercepta requisições OPTIONS (pré-voo CORS)
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
+// Middleware para servir arquivos estáticos com cache
+app.use(express.static('dist', {
+  maxAge: '1y',
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
+}));
+
+// Função para fazer proxy de requisições para a API da Caixa
+const proxyRequest = async (req, res, endpoint) => {
+  try {
+    const url = `https://servicebus2.caixa.gov.br/portaldeloterias/api/${endpoint}`;
+    console.log(`Proxy request to: ${url}`);
+    
+    const response = await axios.get(url, {
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, como Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+      }
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    console.error('Proxy error:', error);
+    res.status(500).json({ error: 'Erro ao acessar a API da Caixa', details: error.message });
+  }
+};
+
+// Definição das rotas para as diferentes modalidades de loteria
+const loterias = [
+  'megasena', 'lotofacil', 'quina', 'timemania', 'duplasena',
+  'diadesorte', 'supersete', 'lotomania', 'mais-milionaria',
+  'federal', 'loteca', 'lotogol'
+];
+
+loterias.forEach(loteria => {
+  app.get(`/api/${loteria}`, (req, res) => proxyRequest(req, res, loteria));
+  app.get(`/api/${loteria}/:concurso`, (req, res) => proxyRequest(req, res, `${loteria}/${req.params.concurso}`));
+});
+
+// Rotas para o gerador avançado (SPA)
+const advancedGeneratorRoutes = loterias.map(loteria => `/${loteria}/gerador-avancado`);
+
+// Rotas base das modalidades de loteria
+const loteriaBaseRoutes = loterias.map(loteria => `/${loteria}`);
+
+// Roteamento para o SPA - geradores avançados
+app.get(advancedGeneratorRoutes, (req, res) => {
+  console.log(`Servindo SPA para gerador avançado: ${req.path}`);
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// Roteamento para as bases das modalidades
+app.get(loteriaBaseRoutes, (req, res) => {
+  console.log(`Servindo SPA para modalidade base: ${req.path}`);
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// Rota para todas as outras páginas do SPA
+app.get('*', (req, res, next) => {
+  // Se a rota começar com /api, passa para o próximo middleware
+  if (req.path.startsWith('/api')) {
+    return next();
+  }
+  
+  // Se for um arquivo estático, procura na pasta dist
+  if (req.path.includes('.') && !req.path.endsWith('.html')) {
+    const filePath = path.join(__dirname, 'dist', req.path);
+    if (fs.existsSync(filePath)) {
+      return res.sendFile(filePath);
+    }
+  }
+  
+  // Para qualquer outra rota, serve o index.html para o React Router
+  console.log(`Servindo SPA para rota genérica: ${req.path}`);
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+});
